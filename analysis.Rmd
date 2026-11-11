@@ -415,7 +415,7 @@ underpredict, which suggests denominator composition — large young, healthy st
 # Conclusions
 
 1. **Income, not physician supply, predicts avoidable ER use in Georgia.**
-Each $10,000 of median household income is associated with 25.8 fewer avoidable visits per 10,000 residents; income alone explains 31% of cross-county variation.
+Each $10,000 of median household income is associated with 25.8 fewer avoidable visits per 10,000 residents; income alone explains 30% of cross-county variation.
 
 2. **Primary care physician ratio shows no association** with avoidable ER use, bivariate or controlled. Access policy framed around physician supply may target the wrong lever.
 
@@ -435,7 +435,7 @@ Each $10,000 of median household income is associated with 25.8 fewer avoidable 
 - Test the cross-border hypothesis directly using distance to the nearest ER, including out-of-state facilities.
 - Stratify by payor. OASIS supports self-pay and PeachCare breakdowns, which would speak more directly to coverage than the uninsured rate does.
 - Extend to a panel specification with county fixed effects to exploit the seven-year window.
-- The PCP ratio range with minimum 670:1 and maximum 20,171:1 includes a thirty-fold spread, and it still predicts nothing. It's a genuine non-relationship across enormous variation and there may be further study required looking into its effects.
+- Replace the PCP ratio with measures of effective access: Medicaid acceptance, NP and FQHC capacity, and cross-county care-seeking. Physician supply varies thirty-fold here yet predicts nothing, which may reflect how access is measured rather than whether it matters.
 
 # Reproducibility
 
