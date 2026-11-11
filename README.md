@@ -4,6 +4,8 @@
 
 📄 **[Read the full report](https://awiqar.github.io/georgia-avoidable-ed/analysis.html)** (rendered R Markdown, with code)
 
+📊 **[Explore the interactive dashboard](https://public.tableau.com/app/profile/ahmed.wiqar/viz/AvoidableERUseinGeorgia/AvoidableERUse)** (Tableau Public)
+
 ---
 
 ## Question
@@ -50,6 +52,7 @@ The analysis covers six ACSC categories: diabetes, hypertension, hypertensive he
 │   ├── raw/              # source exports from OASIS and County Health Rankings
 │   └── clean/            # analysis-ready CSVs written by analysis.Rmd
 ├── figures/              # key charts used in this README
+├── tableau/              # Tableau-ready extracts behind the dashboard
 └── georgia-avoidable-ed.Rproj
 ```
 
