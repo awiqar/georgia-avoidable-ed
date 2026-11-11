@@ -1,0 +1,27 @@
+# --- R / RStudio ---
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Rapp.history
+.httr-oauth
+
+# --- knitr / R Markdown intermediates ---
+*_cache/
+*_files/
+*.knit.md
+*.utf8.md
+
+# --- Excel / Office lock files (created while a file is open) ---
+~$*
+
+# --- OS clutter ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Data ---
+# Raw data is public (OASIS, County Health Rankings) and small, so it is
+# committed to keep the project reproducible. If you'd rather not commit it,
+# uncomment the line below and add download instructions to the README.
+# data/raw/

@@ -1,0 +1,444 @@
+---
+title: "Avoidable Emergency Department Use in Georgia"
+subtitle: "County-level predictors of ambulatory care sensitive ER visits, 2019-2025"
+author: "Ahmed Wiqar"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: flatly
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 8,
+  fig.height = 5
+)
+
+library(readxl)   # read Excel workbooks
+library(dplyr)    # data manipulation verbs
+library(tidyr)    # reshaping (pivot_longer)
+library(stringr)  # string cleaning
+library(readr)    # parse_number(), write_csv()
+library(ggplot2)  # plots
+```
+
+# Research question
+
+Ambulatory care sensitive conditions (ACSCs) are conditions for which timely, effective outpatient care should prevent the need for emergency treatment. High ACSC emergency department rates are therefore read as a signal of unmet primary care need rather than of population sickness alone.
+
+**Question:** Which Georgia counties have the highest rates of avoidable ER use, and does that variation track with primary care physician supply?
+
+**Headline finding:** It does not. Avoidable ER use tracks county *income*. Physician supply shows no independent association once income is controlled.
+
+# Data sources
+
+| Source | Content | Years | Notes |
+|---|---|---|---|
+| Georgia DPH OASIS | ER visits by county and cause | 2019-2025 | Georgia hospitals only |
+| Georgia DPH OASIS | County population | 2019-2025 | Intercensal estimates |
+| County Health Rankings | County characteristics | 2023 release | Treated as static |
+
+Six ACSC categories were available in OASIS and are used here: diabetes,
+hypertension, hypertensive heart disease, hypertensive heart and chronic
+kidney disease, pneumonia, and asthma.
+
+County Health Rankings measures are taken from the 2023 release only and
+treated as fixed county characteristics. Primary care supply, rurality, and median income move slowly relative to the seven-year study window, and the central analysis is cross-sectional rather than longitudinal.
+
+```{r paths}
+# Relative paths so the project runs on any machine.
+# Requires an RStudio Project with the data in ./data/raw/
+data_dir <- "data/raw"
+
+f_er   <- file.path(data_dir, "oasis_er_acsc.xlsx")
+f_pop  <- file.path(data_dir, "oasis_population.xlsx")
+f_chr  <- file.path(data_dir, "chr_georgia_2023.xlsx")
+```
+
+# ER visits
+
+## Import
+
+OASIS exports wide: one column per year, plus a "Selected Causes Total"
+subtotal row for every county and a "County Summary" statewide row. Rows 1-4 of the file are title and two-row header formatting, so the real data begins at row 5 and column names are supplied manually.
+
+```{r er-import}
+er_raw <- read_excel(f_er, skip = 4, col_names = FALSE)
+
+names(er_raw) <- c("county", "fips", "cause",
+                   "y2019", "y2020", "y2021", "y2022",
+                   "y2023", "y2024", "y2025", "total")
+```
+
+## Reshape and clean
+
+Three transformations happen here:
+
+1. **Wide to long.** Year is a variable but arrives as column names. Nothing downstream (grouping, joining, filtering by year) works until it is a column.
+2. **Drop aggregate rows.** Both the per-county cause subtotals and the
+   statewide "County Summary" row would double-count if retained.
+3. **Type coercion.** FIPS is kept as character because it is an identifier, not a quantity; leading zeros matter in other states and the habit is right.
+
+```{r er-clean}
+er <- er_raw |>
+  select(-total) |>             # recomputable; would corrupt the pivot
+  pivot_longer(
+    starts_with("y"),
+    names_to  = "year",
+    values_to = "visits"
+  ) |>
+  mutate(
+    county = str_trim(county),
+    fips   = as.character(fips),
+    cause  = str_trim(cause),
+    year   = parse_number(year),          # "y2019" -> 2019
+    visits = as.numeric(visits)
+  ) |>
+  filter(
+    !str_detect(cause, "Selected Causes Total"),
+    county != "County Summary",
+    !is.na(county),
+    !is.na(visits)
+  )
+```
+
+## Validation
+
+Expected dimensions: 159 counties x 6 causes x 7 years = 6,678 rows.
+
+An earlier version of this import returned 6,720 rows across 160 geographies. Inspection identified a statewide aggregate row labelled "County Summary" — a label that does not obviously read as a total — which was then excluded.Row-count validation caught an error that visual inspection of the file did not.
+
+```{r er-validate}
+c(rows     = nrow(er),
+  counties = n_distinct(er$county),
+  causes   = n_distinct(er$cause),
+  years    = n_distinct(er$year))
+```
+
+```{r er-validate-causes}
+count(er, cause)
+```
+
+# Population
+
+```{r pop-import}
+pop_raw <- read_excel(f_pop, skip = 4, col_names = FALSE)
+
+names(pop_raw) <- c("county", "fips",
+                    "y2019", "y2020", "y2021", "y2022",
+                    "y2023", "y2024", "y2025", "total")
+```
+
+```{r pop-clean}
+pop <- pop_raw |>
+  select(-total) |>
+  pivot_longer(
+    starts_with("y"),
+    names_to  = "year",
+    values_to = "population"
+  ) |>
+  mutate(
+    county     = str_trim(county),
+    fips       = as.character(fips),
+    year       = parse_number(year),
+    population = as.numeric(population)
+  ) |>
+  filter(county != "County Summary", !is.na(county), !is.na(population))
+```
+
+```{r pop-validate}
+c(rows = nrow(pop), counties = n_distinct(pop$county))   # expect 1113, 159
+```
+
+## Join check
+
+Verify key alignment *before* joining. Unmatched names are the most common
+cause of silently dropped rows, and a post-hoc row count cannot distinguish a clean join from one that lost twenty counties.
+
+```{r join-check}
+list(
+  in_er_not_pop = setdiff(er$county, pop$county),
+  in_pop_not_er = setdiff(pop$county, er$county)
+)
+```
+
+```{r er-pop-join}
+# FIPS is included in the join key rather than left to duplicate as
+# fips.x / fips.y. It is also a more reliable match than the name.
+er_pop <- er |>
+  inner_join(pop, by = c("county", "fips", "year"))
+
+nrow(er_pop)   # must still be 6,678 — growth would indicate duplicate keys
+```
+
+## Rates
+
+```{r er-rates}
+er_rates <- er_pop |>
+  group_by(county, fips, year) |>
+  summarise(
+    acsc_visits = sum(visits),
+    # first() not sum(): population repeats across the six cause rows
+    # for each county-year, so summing would multiply it by six.
+    population  = first(population),
+    .groups     = "drop"
+  ) |>
+  mutate(rate_per_10k = acsc_visits / population * 10000)
+
+nrow(er_rates)   # expect 159 x 7 = 1,113
+```
+
+# County characteristics
+
+County Health Rankings splits the measures across two sheets. Primary care
+physician ratio and uninsured percentage sit in "Ranked Measure Data";
+rurality and median household income sit in "Additional Measure Data".
+Both sheets carry a title row above the real header, hence `skip = 1`.
+
+```{r chr-import}
+chr_ranked <- read_excel(f_chr, sheet = "Ranked Measure Data", skip = 1)
+chr_addl   <- read_excel(f_chr, sheet = "Additional Measure Data", skip = 1)
+```
+
+```{r chr-clean}
+ranked <- chr_ranked |>
+  select(
+    fips          = FIPS,
+    county        = County,
+    pcp_ratio     = `Primary Care Physicians Ratio`,
+    uninsured_pct = `% Uninsured`
+  )
+
+addl <- chr_addl |>
+  select(
+    fips          = FIPS,
+    rural_pct     = `% Rural`,
+    median_income = `Median Household Income`
+  )
+
+chr <- ranked |>
+  inner_join(addl, by = "fips") |>
+  filter(!is.na(county)) |>           # drops the state-level summary row
+  mutate(
+    fips          = as.character(fips),
+    county        = str_remove(str_trim(county), " County$"),
+    # PCP ratio may arrive formatted as "1,890:1"; parse_number extracts 1890.
+    # Higher ratio = WORSE access. Direction matters for interpretation.
+    pcp_ratio     = parse_number(as.character(pcp_ratio)),
+    uninsured_pct = as.numeric(uninsured_pct),
+    rural_pct     = as.numeric(rural_pct),
+    median_income = as.numeric(median_income)
+  )
+
+nrow(chr)   # expect 159
+```
+
+```{r chr-summary}
+chr |> select(pcp_ratio, uninsured_pct, rural_pct, median_income) |> summary()
+```
+
+Counties with no primary care physician appear as `NA` rather than as a
+ratio. This is meaningful missingness — the most extreme form of the access problem under study — and those counties are excluded from models involving `pcp_ratio` rather than imputed.
+
+# Analysis dataset
+
+```{r final-join}
+stopifnot(length(setdiff(er_rates$fips, chr$fips)) == 0)
+
+analysis <- er_rates |>
+  left_join(select(chr, -county), by = "fips")   # drop duplicate name column
+
+stopifnot(nrow(analysis) == nrow(er_rates))      # join must not change row count
+
+n_missing_pcp <- chr |> filter(is.na(pcp_ratio)) |> nrow()
+n_missing_pcp   # 13 counties have no primary care physician on record
+```
+The 13 counties with no primary care physician on record are excluded from models involving pcp_ratio, leaving 146 counties.
+
+```{r export}
+dir.create("data/clean", recursive = TRUE, showWarnings = FALSE)
+write_csv(analysis, "data/clean/er_rates.csv", na = "")      # county-year, for mapping
+write_csv(er_pop,   "data/clean/er_by_cause.csv")   # cause detail, for breakdown
+```
+
+# Exploratory findings
+
+## Is the final year complete?
+
+```{r year-totals}
+analysis |>
+  group_by(year) |>
+  summarise(
+    total_visits   = sum(acsc_visits),
+    statewide_rate = sum(acsc_visits) / sum(population) * 10000,
+    .groups = "drop"
+  )
+```
+
+2025 totals are consistent with 2024, so the year is complete and retained.
+
+The series also records the pandemic clearly: the statewide rate fell from
+178.2 per 10,000 in 2019 to 136.1 in 2020 as patients avoided emergency
+departments. Recovery has been incomplete — the 2025 rate of 167.4 remains
+below the 2019 baseline six years later.
+
+## Which counties rank highest?
+
+```{r top-counties}
+analysis |>
+  filter(year == 2024) |>
+  arrange(desc(rate_per_10k)) |>
+  select(county, population, acsc_visits, rate_per_10k) |>
+  head(20)
+```
+
+The highest-rate counties form a coherent geographic band across rural south and middle Georgia rather than a scatter of outliers.
+
+Small-county rate instability was anticipated but is not severe here: only
+three of the top ten counties have populations under 10,000. Rather than
+excluding the 34 counties below that threshold, they are retained and flagged, with point size on the scatter encoding population.
+
+## Which conditions drive volume?
+
+```{r condition-mix}
+er_pop |>
+  filter(year == 2024) |>
+  group_by(cause) |>
+  summarise(visits = sum(visits), .groups = "drop") |>
+  arrange(desc(visits)) |>
+  mutate(pct = round(100 * visits / sum(visits), 1))
+```
+
+Hypertension alone accounts for 29.8% of avoidable visits; including the two hypertensive subtypes brings the cardiovascular share to 38.9%.
+
+# Modelling
+
+The analysis is cross-sectional, using 2024 as the most recent complete year with stable post-pandemic utilisation.
+
+```{r model-data}
+d2024 <- analysis |>
+  filter(year == 2024, !is.na(pcp_ratio)) |>
+  mutate(income_10k = median_income / 10000)   # rescaled for readable coefficients
+```
+
+## Bivariate relationships
+
+```{r correlations}
+d2024 |>
+  select(rate_per_10k, pcp_ratio, uninsured_pct, rural_pct, median_income) |>
+  cor(use = "complete.obs") |>
+  round(3)
+```
+
+Median income is the strongest correlate at r = -0.55. Primary care physician ratio is effectively uncorrelated at r = 0.03. Uninsured rate (0.25) and rurality (0.12) are weakly positive, but both are themselves correlated with income (-0.45 and -0.36), suggesting they may not carry independent signal.
+
+```{r scatter-pcp}
+ggplot(d2024, aes(pcp_ratio, rate_per_10k, size = population)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, show.legend = FALSE) +
+  labs(
+    title    = "Physician supply does not predict avoidable ER use",
+    subtitle = "Georgia counties, 2024. Higher ratio = fewer physicians per resident.",
+    x = "Residents per primary care physician",
+    y = "Avoidable ER visits per 10,000",
+    size = "Population"
+  ) +
+  theme_minimal()
+```
+
+```{r scatter-income}
+ggplot(d2024, aes(income_10k, rate_per_10k, size = population)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, show.legend = FALSE) +
+  labs(
+    title    = "Avoidable ER use falls sharply with county income",
+    subtitle = "Georgia counties, 2024",
+    x = "Median household income ($10,000s)",
+    y = "Avoidable ER visits per 10,000",
+    size = "Population"
+  ) +
+  theme_minimal()
+```
+
+## Multivariate model
+
+```{r model}
+m <- lm(rate_per_10k ~ income_10k + pcp_ratio + uninsured_pct + rural_pct,
+        data = d2024)
+summary(m)
+```
+
+Income is the only significant predictor (t = -7.11, p < 0.001). Each
+additional $10,000 of median household income is associated with **25.8 fewer avoidable ER visits per 10,000 residents** — roughly 15% of the statewide average rate. The model explains 31% of cross-county variation.
+
+Physician ratio, uninsured rate, and rurality are all insignificant once
+income is included. Uninsured rate in particular falls from r = 0.25
+bivariate to p = 0.71 in the model, consistent with it proxying income.
+
+## Diagnostics
+
+```{r diagnostics, fig.width=9, fig.height=7}
+par(mfrow = c(2, 2))
+plot(m)
+par(mfrow = c(1, 1))
+```
+
+Scale-Location is approximately flat, so no correction for heteroskedasticity is required. Q-Q shows mild tail deviation. No observation exceeds a Cook's distance threshold of concern, so the fit is not driven by individual counties.
+
+## Residual inspection
+
+```{r residuals}
+d2024$resid <- residuals(m)
+
+d2024 |>
+  arrange(resid) |>
+  select(county, population, median_income, rate_per_10k, resid) |>
+  head(15)
+```
+
+The largest underpredictions cluster around three identifiable mechanisms.
+
+**Cross-border care.** Dade (-164), Catoosa (-129), and Walker (-127) sit in the Chattanooga metropolitan area on the Tennessee line. Dade's observed rate of 12.4 per 10,000 against a statewide average near 172 is not plausible as true utilisation. Charlton, near Jacksonville, shows the same pattern. Because OASIS captures visits to *Georgia* hospitals, out-of-state emergency care is invisible to this measure. Chattahoochee County adds a related mechanism: Fort Benning's on-post military facilities also fall outside civilian discharge reporting.
+
+**Geographic inaccessibility.** Clay (pop. 2,795), Webster (2,331), Wheeler, and Wilcox are small, poor, and distant from any emergency department. The measure cannot record avoidable ER use where no ER is reachable — meaning it likely understates unmet need precisely where that need is greatest.
+
+**Unexplained.** Clarke, Lowndes, and Bulloch are university counties and
+underpredict, which suggests denominator composition — large young, healthy student populations — as a candidate explanation. This was tested informally against Baldwin and Bibb, which also host universities and do *not* follow the pattern. The hypothesis is noted but not supported and is not claimed here.
+
+# Conclusions
+
+1. **Income, not physician supply, predicts avoidable ER use in Georgia.**
+Each $10,000 of median household income is associated with 25.8 fewer avoidable visits per 10,000 residents; income alone explains 31% of cross-county variation.
+
+2. **Primary care physician ratio shows no association** with avoidable ER use, bivariate or controlled. Access policy framed around physician supply may target the wrong lever.
+
+3. **The measure has a geographic blind spot.** Counties adjacent to out-of-state metropolitan areas systematically undercount, and remote counties without nearby emergency departments understate need rather than demonstrating its absence.
+
+## Limitations
+
+- Georgia hospital discharges only; out-of-state and military facility care is excluded.
+- Population figures are intercensal estimates, not measured counts.
+- County Health Rankings measures are from a single year and treated as static.
+- Six ACSC categories were available in OASIS; this is narrower than the full AHRQ Prevention Quality Indicator set.
+- Cross-sectional analysis; no causal claim is made.
+- Rates in the smallest counties rest on a few hundred visits and are correspondingly unstable, and the unweighted model gives them equal influence.
+
+## Further work
+
+- Test the cross-border hypothesis directly using distance to the nearest ER, including out-of-state facilities.
+- Stratify by payor. OASIS supports self-pay and PeachCare breakdowns, which would speak more directly to coverage than the uninsured rate does.
+- Extend to a panel specification with county fixed effects to exploit the seven-year window.
+- The PCP ratio range with minimum 670:1 and maximum 20,171:1 includes a thirty-fold spread, and it still predicts nothing. It's a genuine non-relationship across enormous variation and there may be further study required looking into its effects.
+
+# Reproducibility
+
+```{r session-info}
+sessionInfo()
+```
